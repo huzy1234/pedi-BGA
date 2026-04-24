@@ -4,6 +4,94 @@ import { AlertTriangle, Camera, FileText, Keyboard, Loader2, Upload } from 'luci
 import { BGAData, Scenario, BasicInfoA, BasicInfoB } from '../types';
 import { extractBGADataFromImage, extractBGADataFromText } from '../services/geminiService';
 
+const emptyBGAData: BGAData = {
+  pH: null, PaCO2: null, PaO2: null, HCO3: null, BE: null,
+  Lactate: null, Na: null, K: null, Cl: null, Albumin: null, Glucose: null
+};
+
+const MAX_IMAGE_EDGE = 1800;
+const JPEG_QUALITY = 0.82;
+
+interface PreparedImage {
+  dataUrl: string;
+  base64Data: string;
+  mimeType: 'image/jpeg';
+  originalSize: number;
+  processedSize: number;
+}
+
+function normalizeBGAData(data: Partial<BGAData>): BGAData {
+  return { ...emptyBGAData, ...data };
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('无法读取这张图片。手机拍照请使用 JPG/PNG，或先截屏后再上传。'));
+    image.src = url;
+  });
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('图片读取失败，请重新选择图片。'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error('图片压缩失败，请重新拍照或上传截图。'));
+      }
+    }, type, quality);
+  });
+}
+
+async function prepareImageForRecognition(file: File): Promise<PreparedImage> {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await loadImage(objectUrl);
+    const maxEdge = Math.max(image.naturalWidth, image.naturalHeight);
+    const scale = maxEdge > MAX_IMAGE_EDGE ? MAX_IMAGE_EDGE / maxEdge : 1;
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const canvas = document.createElement('canvas');
+
+    canvas.width = width;
+    canvas.height = height;
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('当前浏览器不支持图片压缩，请换用手动输入或粘贴文本。');
+    }
+
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+
+    const blob = await canvasToBlob(canvas, 'image/jpeg', JPEG_QUALITY);
+    const dataUrl = await blobToDataUrl(blob);
+
+    return {
+      dataUrl,
+      base64Data: dataUrl.split(',')[1] || '',
+      mimeType: 'image/jpeg',
+      originalSize: file.size,
+      processedSize: blob.size,
+    };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 interface Props {
   key?: React.Key;
   scenario: Scenario;
@@ -15,11 +103,9 @@ interface Props {
 
 export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: Props) {
   const [activeTab, setActiveTab] = useState<'image' | 'text' | 'manual'>('manual');
-  const [bgaData, setBgaData] = useState<BGAData>({
-    pH: null, PaCO2: null, PaO2: null, HCO3: null, BE: null,
-    Lactate: null, Na: null, K: null, Cl: null, Albumin: null, Glucose: null
-  });
+  const [bgaData, setBgaData] = useState<BGAData>(emptyBGAData);
   const [isLoading, setIsLoading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState('');
   const [rawText, setRawText] = useState('');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isConfirming, setIsConfirming] = useState(false);
@@ -27,26 +113,29 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      const base64String = reader.result as string;
-      setImagePreview(base64String);
-      setIsLoading(true);
-      try {
-        const base64Data = base64String.split(',')[1];
-        const extracted = await extractBGADataFromImage(base64Data, file.type);
-        setBgaData(extracted);
-        setIsConfirming(true);
-      } catch (error) {
-        console.error('Failed to extract data from image:', error);
-        alert('识别失败，请重试或手动输入');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    reader.readAsDataURL(file);
+    setIsLoading(true);
+    setIsConfirming(false);
+    setUploadStatus('正在压缩图片...');
+
+    try {
+      const preparedImage = await prepareImageForRecognition(file);
+      setImagePreview(preparedImage.dataUrl);
+      setUploadStatus('正在识别图片...');
+
+      const extracted = await extractBGADataFromImage(preparedImage.base64Data, preparedImage.mimeType);
+      setBgaData(normalizeBGAData(extracted));
+      setIsConfirming(true);
+    } catch (error) {
+      console.error('Failed to extract data from image:', error);
+      const message = error instanceof Error ? error.message : '识别失败，请重试或手动输入';
+      alert(message.includes('无法读取') ? message : '识别失败。手机拍照请尽量裁到报告区域、保持清晰，或先截图后再上传。');
+    } finally {
+      setIsLoading(false);
+      setUploadStatus('');
+    }
   };
 
   const handleTextExtract = async () => {
@@ -54,7 +143,7 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
     setIsLoading(true);
     try {
       const extracted = await extractBGADataFromText(rawText);
-      setBgaData(extracted);
+      setBgaData(normalizeBGAData(extracted));
       setIsConfirming(true);
     } catch (error) {
       console.error('Failed to extract data from text:', error);
@@ -235,7 +324,7 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
         <div className="mt-6">
           <input
             type="file"
-            accept="image/*"
+            accept="image/*,.heic,.heif"
             className="hidden"
             ref={fileInputRef}
             onChange={handleImageUpload}
@@ -250,7 +339,8 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
             ) : (
               <Upload className="w-8 h-8 mb-2" />
             )}
-            <span>{isLoading ? '正在识别中...' : '点击上传血气报告图片'}</span>
+            <span>{isLoading ? uploadStatus || '正在识别中...' : '点击上传血气报告图片'}</span>
+            {!isLoading && <span className="mt-2 text-xs text-slate-400">手机拍照会自动压缩为可识别格式</span>}
           </button>
         </div>
       )}
