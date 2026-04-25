@@ -15,7 +15,7 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { BGAAnalysisResult, BGAData, BasicInfoA, BasicInfoB, Scenario } from '../types';
-import { CalculationRow, TreatmentSection, buildTreatmentPlan } from '../utils/treatmentPlan';
+import { CalculationRow, DailyFluidOrder, TreatmentSection, buildTreatmentPlan } from '../utils/treatmentPlan';
 
 interface Props {
   key?: React.Key;
@@ -132,6 +132,51 @@ function TreatmentCard({ section, icon }: { section: TreatmentSection; icon: Rea
   );
 }
 
+function DailyFluidOrders({ orders }: { orders: DailyFluidOrder[] }) {
+  if (orders.length === 0) return null;
+
+  return (
+    <div className="mb-4">
+      <p className="text-xs font-bold text-slate-500 mb-2">直接拟医嘱</p>
+      <div className="divide-y divide-slate-200 rounded-lg border border-teal-100 bg-teal-50/50 overflow-hidden">
+        {orders.map((order) => (
+          <div key={order.day} className="p-3">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between mb-3">
+              <div>
+                <p className="text-sm font-bold text-teal-950">{order.day}：{order.title}</p>
+                <p className="text-xs text-slate-600 mt-1">{order.note}</p>
+              </div>
+              <span className="text-xs font-semibold text-teal-800 bg-white border border-teal-100 rounded-full px-2.5 py-1 w-fit">
+                {compactNumber(order.totalMl, 0)} mL / 24h，{compactNumber(order.rateMlPerHour)} mL/h
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+              <div className="rounded-md bg-white border border-teal-100 p-2">
+                <span className="block text-xs text-slate-500">5% GS</span>
+                <span className="font-bold text-slate-950">{compactNumber(order.glucose5Ml, 0)} mL</span>
+              </div>
+              <div className="rounded-md bg-white border border-teal-100 p-2">
+                <span className="block text-xs text-slate-500">10% 氯化钠</span>
+                <span className="font-bold text-slate-950">{compactNumber(order.sodiumChloride10Ml, 1)} mL</span>
+              </div>
+              <div className="rounded-md bg-white border border-teal-100 p-2">
+                <span className="block text-xs text-slate-500">10% 氯化钾</span>
+                <span className={order.potassiumChloride10Ml > 0 ? 'font-bold text-slate-950' : 'font-bold text-amber-700'}>
+                  {compactNumber(order.potassiumChloride10Ml, 1)} mL
+                </span>
+              </div>
+              <div className="rounded-md bg-white border border-teal-100 p-2">
+                <span className="block text-xs text-slate-500">目标张力</span>
+                <span className="font-bold text-slate-950">Na {order.sodiumTargetMmolPerL} mmol/L</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function ReportView({ scenario, infoA, infoB, bgaData, result, onReset }: Props) {
   const isA = scenario === 'A';
   const accent = isA ? 'text-cyan-700' : 'text-teal-700';
@@ -236,6 +281,7 @@ export default function ReportView({ scenario, infoA, infoB, bgaData, result, on
                   <div><span className="text-slate-500 block">标本</span><span className="font-semibold">{infoB.sampleType}</span></div>
                   <div><span className="text-slate-500 block">年龄</span><span className="font-semibold">{infoB.ageValue}{infoB.ageUnit === 'days' ? '天' : infoB.ageUnit === 'months' ? '月' : '岁'}</span></div>
                   <div><span className="text-slate-500 block">体重</span><span className="font-semibold">{infoB.weight}kg</span></div>
+                  <div><span className="text-slate-500 block">脱水程度</span><span className="font-semibold">{treatmentPlan.fluids.selectedDehydration.label}</span></div>
                   <div className="col-span-2"><span className="text-slate-500 block">氧疗/通气</span><span className="font-semibold">{infoB.oxygenStatus || '未提供'}</span></div>
                   <div className="col-span-2"><span className="text-slate-500 block">临床诊断</span><span className="font-semibold">{infoB.clinicalDiagnosis || '未提供'}</span></div>
                 </>
@@ -340,6 +386,8 @@ export default function ReportView({ scenario, infoA, infoB, bgaData, result, on
               <StatusPill tone={treatmentPlan.fluids.tone}>{treatmentPlan.fluids.tone === 'warn' ? '需警惕' : '参考'}</StatusPill>
             </div>
             <p className="text-sm text-slate-600 mb-4">{treatmentPlan.fluids.summary}</p>
+
+            <DailyFluidOrders orders={treatmentPlan.fluids.dailyOrders} />
 
             <div className="grid sm:grid-cols-2 gap-2 mb-4">
               {treatmentPlan.fluids.calculations.map((item) => (

@@ -1,4 +1,5 @@
 export type Scenario = 'A' | 'B' | null;
+export type DehydrationSeverity = 'none' | 'mild' | 'moderate' | 'severe';
 
 export interface BasicInfoA {
   gestationalAgeWeeks: number;
@@ -18,6 +19,7 @@ export interface BasicInfoB {
   ageValue: number;
   ageUnit: 'days' | 'months' | 'years';
   weight: number;
+  dehydrationSeverity: DehydrationSeverity;
   sampleType: string;
   oxygenStatus: string;
   clinicalDiagnosis: string;

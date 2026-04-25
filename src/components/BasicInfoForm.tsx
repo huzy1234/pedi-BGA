@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { BasicInfoA, BasicInfoB, Scenario } from '../types';
+import { BasicInfoA, BasicInfoB, DehydrationSeverity, Scenario } from '../types';
 
 interface Props {
   key?: React.Key;
@@ -8,6 +8,13 @@ interface Props {
   onSubmit: (info: BasicInfoA | BasicInfoB) => void;
   onBack: () => void;
 }
+
+const dehydrationOptions: Array<{ value: DehydrationSeverity; label: string; hint: string }> = [
+  { value: 'none', label: '无明显脱水', hint: '维持/限制液' },
+  { value: 'mild', label: '轻度脱水', hint: '<5%' },
+  { value: 'moderate', label: '中度脱水', hint: '约5%' },
+  { value: 'severe', label: '重度脱水', hint: '约10%' },
+];
 
 export default function BasicInfoForm({ scenario, onSubmit, onBack }: Props) {
   const [infoA, setInfoA] = useState<BasicInfoA>({
@@ -28,6 +35,7 @@ export default function BasicInfoForm({ scenario, onSubmit, onBack }: Props) {
     ageValue: 1,
     ageUnit: 'years',
     weight: 10,
+    dehydrationSeverity: 'none',
     sampleType: '动脉血',
     oxygenStatus: '空气 (FiO2 21%)',
     clinicalDiagnosis: '',
@@ -229,6 +237,33 @@ export default function BasicInfoForm({ scenario, onSubmit, onBack }: Props) {
                 className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none"
                 required
               />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <label className="block text-sm font-medium text-slate-700">诊断选择：脱水程度</label>
+                <span className="text-xs font-medium text-slate-500">由临床体征选择</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {dehydrationOptions.map((option) => {
+                  const active = infoB.dehydrationSeverity === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setInfoB({ ...infoB, dehydrationSeverity: option.value })}
+                      className={`rounded-lg border px-3 py-3 text-left transition-colors ${
+                        active
+                          ? 'border-teal-600 bg-teal-50 text-teal-950 shadow-sm'
+                          : 'border-slate-200 bg-white text-slate-700 hover:border-teal-200 hover:bg-teal-50/50'
+                      }`}
+                    >
+                      <span className="block text-sm font-bold">{option.label}</span>
+                      <span className={`mt-1 block text-xs ${active ? 'text-teal-700' : 'text-slate-500'}`}>{option.hint}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div>
