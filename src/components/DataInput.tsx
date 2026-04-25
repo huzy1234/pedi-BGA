@@ -9,8 +9,8 @@ const emptyBGAData: BGAData = {
   Lactate: null, Na: null, K: null, Cl: null, Albumin: null, Glucose: null
 };
 
-const MAX_IMAGE_EDGE = 1800;
-const JPEG_QUALITY = 0.82;
+const MAX_IMAGE_EDGE = 1400;
+const JPEG_QUALITY = 0.74;
 
 interface PreparedImage {
   dataUrl: string;
@@ -106,6 +106,7 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
   const [bgaData, setBgaData] = useState<BGAData>(emptyBGAData);
   const [isLoading, setIsLoading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
   const [rawText, setRawText] = useState('');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isConfirming, setIsConfirming] = useState(false);
@@ -118,12 +119,13 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
 
     setIsLoading(true);
     setIsConfirming(false);
+    setErrorMessage('');
     setUploadStatus('正在压缩图片...');
 
     try {
       const preparedImage = await prepareImageForRecognition(file);
       setImagePreview(preparedImage.dataUrl);
-      setUploadStatus('正在识别图片...');
+      setUploadStatus('正在上传并识别...');
 
       const extracted = await extractBGADataFromImage(preparedImage.base64Data, preparedImage.mimeType);
       setBgaData(normalizeBGAData(extracted));
@@ -131,7 +133,7 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
     } catch (error) {
       console.error('Failed to extract data from image:', error);
       const message = error instanceof Error ? error.message : '识别失败，请重试或手动输入';
-      alert(message.includes('无法读取') ? message : '识别失败。手机拍照请尽量裁到报告区域、保持清晰，或先截图后再上传。');
+      setErrorMessage(message.includes('无法读取') ? message : `识别失败。${message}`);
     } finally {
       setIsLoading(false);
       setUploadStatus('');
@@ -141,13 +143,15 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
   const handleTextExtract = async () => {
     if (!rawText.trim()) return;
     setIsLoading(true);
+    setErrorMessage('');
     try {
       const extracted = await extractBGADataFromText(rawText);
       setBgaData(normalizeBGAData(extracted));
       setIsConfirming(true);
     } catch (error) {
       console.error('Failed to extract data from text:', error);
-      alert('识别失败，请重试或手动输入');
+      const message = error instanceof Error ? error.message : '识别失败，请重试或手动输入';
+      setErrorMessage(message);
     } finally {
       setIsLoading(false);
     }
@@ -318,6 +322,17 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
         </button>
       </div>
 
+      {errorMessage && (
+        <div className="mb-5 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 flex gap-2">
+          <AlertTriangle className="w-4 h-4 mt-0.5 flex-none" />
+          <div>
+            <p className="font-semibold">识别没有成功</p>
+            <p className="mt-1">{errorMessage}</p>
+            <p className="mt-1 text-red-700">建议裁到报告单区域、保持文字清晰，或先用手机截图后上传。</p>
+          </div>
+        </div>
+      )}
+
       {activeTab === 'manual' && renderManualForm()}
 
       {activeTab === 'image' && !isConfirming && (
@@ -340,7 +355,7 @@ export default function DataInput({ scenario, infoA, infoB, onSubmit, onBack }: 
               <Upload className="w-8 h-8 mb-2" />
             )}
             <span>{isLoading ? uploadStatus || '正在识别中...' : '点击上传血气报告图片'}</span>
-            {!isLoading && <span className="mt-2 text-xs text-slate-400">手机拍照会自动压缩为可识别格式</span>}
+            {!isLoading && <span className="mt-2 text-xs text-slate-400">手机拍照会自动压缩并走服务器识别</span>}
           </button>
         </div>
       )}

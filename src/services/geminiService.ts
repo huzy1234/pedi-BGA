@@ -1,76 +1,88 @@
-import { GoogleGenAI, Type } from '@google/genai';
 import { BGAData } from '../types';
 
-export async function extractBGADataFromImage(base64Image: string, mimeType: string): Promise<BGAData> {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const FUNCTION_ENDPOINT = '/.netlify/functions/extract-bga';
+const REQUEST_TIMEOUT_MS = 30000;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: {
-      parts: [
-        {
-          inlineData: {
-            data: base64Image,
-            mimeType: mimeType,
-          },
-        },
-        {
-          text: '提取图片中的血气分析数值。如果没有找到某个数值，请返回 null。',
-        },
-      ],
-    },
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          pH: { type: Type.NUMBER, description: 'pH值' },
-          PaCO2: { type: Type.NUMBER, description: 'PaCO2或pCO2值 (mmHg)' },
-          PaO2: { type: Type.NUMBER, description: 'PaO2或pO2值 (mmHg)' },
-          HCO3: { type: Type.NUMBER, description: 'HCO3-或cHCO3-值 (mmol/L)' },
-          BE: { type: Type.NUMBER, description: 'BE或BE(ecf)或BE(B)值 (mmol/L)' },
-          Lactate: { type: Type.NUMBER, description: '乳酸或Lac值 (mmol/L)' },
-          Na: { type: Type.NUMBER, description: 'Na+值 (mmol/L)' },
-          K: { type: Type.NUMBER, description: 'K+值 (mmol/L)' },
-          Cl: { type: Type.NUMBER, description: 'Cl-值 (mmol/L)' },
-          Albumin: { type: Type.NUMBER, description: '白蛋白值 (g/dL)' },
-          Glucose: { type: Type.NUMBER, description: '血糖或Glu值 (mmol/L)' },
-        },
-      },
-    },
+const emptyBGAData: BGAData = {
+  pH: null,
+  PaCO2: null,
+  PaO2: null,
+  HCO3: null,
+  BE: null,
+  Lactate: null,
+  Na: null,
+  K: null,
+  Cl: null,
+  Albumin: null,
+  Glucose: null,
+};
+
+function sanitizeNumber(key: keyof BGAData, value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+
+  if (value <= -999 || value === 9999) {
+    return null;
+  }
+
+  if (key === 'pH' && (value < 6 || value > 8)) return null;
+  if (key === 'Albumin' && (value <= 0 || value > 10)) return null;
+
+  return value;
+}
+
+function normalizeBGAData(data: Partial<BGAData>): BGAData {
+  const normalized = { ...emptyBGAData };
+
+  (Object.keys(normalized) as Array<keyof BGAData>).forEach((key) => {
+    normalized[key] = sanitizeNumber(key, data[key]);
   });
 
-  const jsonStr = response.text?.trim() || '{}';
-  return JSON.parse(jsonStr) as BGAData;
+  return normalized;
+}
+
+async function callExtractor(payload: Record<string, unknown>): Promise<BGAData> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(FUNCTION_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    const body = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(body.error || '识别服务暂时不可用，请稍后重试');
+    }
+
+    return normalizeBGAData(body);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('识别超时。请裁剪到报告区域后重试，或改用粘贴文本。');
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+export async function extractBGADataFromImage(base64Image: string, mimeType: string): Promise<BGAData> {
+  return callExtractor({
+    type: 'image',
+    base64Image,
+    mimeType,
+  });
 }
 
 export async function extractBGADataFromText(text: string): Promise<BGAData> {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: `提取以下文本中的血气分析数值。如果没有找到某个数值，请返回 null。\n\n${text}`,
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          pH: { type: Type.NUMBER, description: 'pH值' },
-          PaCO2: { type: Type.NUMBER, description: 'PaCO2或pCO2值 (mmHg)' },
-          PaO2: { type: Type.NUMBER, description: 'PaO2或pO2值 (mmHg)' },
-          HCO3: { type: Type.NUMBER, description: 'HCO3-或cHCO3-值 (mmol/L)' },
-          BE: { type: Type.NUMBER, description: 'BE或BE(ecf)或BE(B)值 (mmol/L)' },
-          Lactate: { type: Type.NUMBER, description: '乳酸或Lac值 (mmol/L)' },
-          Na: { type: Type.NUMBER, description: 'Na+值 (mmol/L)' },
-          K: { type: Type.NUMBER, description: 'K+值 (mmol/L)' },
-          Cl: { type: Type.NUMBER, description: 'Cl-值 (mmol/L)' },
-          Albumin: { type: Type.NUMBER, description: '白蛋白值 (g/dL)' },
-          Glucose: { type: Type.NUMBER, description: '血糖或Glu值 (mmol/L)' },
-        },
-      },
-    },
+  return callExtractor({
+    type: 'text',
+    text,
   });
-
-  const jsonStr = response.text?.trim() || '{}';
-  return JSON.parse(jsonStr) as BGAData;
 }
