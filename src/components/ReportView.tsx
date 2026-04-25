@@ -139,39 +139,46 @@ function DailyFluidOrders({ orders }: { orders: DailyFluidOrder[] }) {
     <div className="mb-4">
       <p className="text-xs font-bold text-slate-500 mb-2">直接拟医嘱</p>
       <div className="divide-y divide-slate-200 rounded-lg border border-teal-100 bg-teal-50/50 overflow-hidden">
-        {orders.map((order) => (
-          <div key={order.day} className="p-3">
-            <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between mb-3">
-              <div>
-                <p className="text-sm font-bold text-teal-950">{order.day}：{order.title}</p>
-                <p className="text-xs text-slate-600 mt-1">{order.note}</p>
-              </div>
-              <span className="text-xs font-semibold text-teal-800 bg-white border border-teal-100 rounded-full px-2.5 py-1 w-fit">
-                {compactNumber(order.totalMl, 0)} mL / 24h，{compactNumber(order.rateMlPerHour)} mL/h
-              </span>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
-              <div className="rounded-md bg-white border border-teal-100 p-2">
-                <span className="block text-xs text-slate-500">5% GS</span>
-                <span className="font-bold text-slate-950">{compactNumber(order.glucose5Ml, 0)} mL</span>
-              </div>
-              <div className="rounded-md bg-white border border-teal-100 p-2">
-                <span className="block text-xs text-slate-500">10% 氯化钠</span>
-                <span className="font-bold text-slate-950">{compactNumber(order.sodiumChloride10Ml, 1)} mL</span>
-              </div>
-              <div className="rounded-md bg-white border border-teal-100 p-2">
-                <span className="block text-xs text-slate-500">10% 氯化钾</span>
-                <span className={order.potassiumChloride10Ml > 0 ? 'font-bold text-slate-950' : 'font-bold text-amber-700'}>
-                  {compactNumber(order.potassiumChloride10Ml, 1)} mL
+        {orders.map((order) => {
+          const hasBicarbonate = order.sodiumBicarbonate14Ml > 0 || order.sodiumBicarbonate5Ml > 0;
+          return (
+            <div key={order.day} className="p-3">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between mb-3">
+                <div>
+                  <p className="text-sm font-bold text-teal-950">{order.day}：{order.title}</p>
+                  <p className="text-xs text-slate-600 mt-1">{order.recipeName}（{order.tonicity}）</p>
+                </div>
+                <span className="text-xs font-semibold text-teal-800 bg-white border border-teal-100 rounded-full px-2.5 py-1 w-fit">
+                  {compactNumber(order.totalMl, 0)} mL / {compactNumber(order.durationHours, 0)}h，{compactNumber(order.rateMlPerHour)} mL/h
                 </span>
               </div>
-              <div className="rounded-md bg-white border border-teal-100 p-2">
-                <span className="block text-xs text-slate-500">目标张力</span>
-                <span className="font-bold text-slate-950">Na {order.sodiumTargetMmolPerL} mmol/L</span>
+
+              <div className="space-y-2 text-sm">
+                <div className="rounded-md bg-white border border-teal-100 p-2">
+                  <span className="block text-xs font-semibold text-slate-500 mb-1">
+                    {hasBicarbonate ? '首选配法：用1.4%SB' : '配法'}
+                  </span>
+                  <span className="font-bold text-slate-950">
+                    5%GS {compactNumber(order.glucose5Ml, 0)} mL + 10%NaCl {compactNumber(order.sodiumChloride10Ml, 1)} mL
+                    {hasBicarbonate ? ` + 1.4%SB ${compactNumber(order.sodiumBicarbonate14Ml, 0)} mL` : ''}
+                    {` + 10%KCl ${compactNumber(order.potassiumChloride10Ml, 1)} mL`}
+                  </span>
+                </div>
+
+                {hasBicarbonate && (
+                  <div className="rounded-md bg-white border border-teal-100 p-2">
+                    <span className="block text-xs font-semibold text-slate-500 mb-1">替代配法：用5%SB</span>
+                    <span className="font-bold text-slate-950">
+                      5%GS {compactNumber(order.glucose5WithSb5Ml, 0)} mL + 10%NaCl {compactNumber(order.sodiumChloride10Ml, 1)} mL + 5%SB {compactNumber(order.sodiumBicarbonate5Ml, 1)} mL + 10%KCl {compactNumber(order.potassiumChloride10Ml, 1)} mL
+                    </span>
+                  </div>
+                )}
               </div>
+
+              <p className="text-xs text-slate-600 mt-2">{order.note}</p>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -404,9 +411,9 @@ export default function ReportView({ scenario, infoA, infoB, bgaData, result, on
                   <thead className="bg-slate-50 text-xs text-slate-500">
                     <tr>
                       <th className="px-3 py-2">脱水分档</th>
-                      <th className="px-3 py-2">缺失量</th>
-                      <th className="px-3 py-2">首24h速率</th>
-                      <th className="px-3 py-2">第2个24h</th>
+                      <th className="px-3 py-2">累积损失估算</th>
+                      <th className="px-3 py-2">首日平均速率</th>
+                      <th className="px-3 py-2">第2天基础速率</th>
                     </tr>
                   </thead>
                   <tbody>

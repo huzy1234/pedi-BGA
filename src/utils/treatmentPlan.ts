@@ -31,11 +31,16 @@ export interface DailyFluidOrder {
   day: string;
   title: string;
   totalMl: number;
+  durationHours: number;
   rateMlPerHour: number;
   glucose5Ml: number;
+  glucose5WithSb5Ml: number;
   sodiumChloride10Ml: number;
+  sodiumBicarbonate14Ml: number;
+  sodiumBicarbonate5Ml: number;
   potassiumChloride10Ml: number;
-  sodiumTargetMmolPerL: number;
+  recipeName: string;
+  tonicity: string;
   potassiumTargetMmolPerL: number;
   note: string;
 }
@@ -62,16 +67,84 @@ export interface TreatmentPlan {
 const SB5_MEq_PER_ML = 50 / 84;
 const SB14_MEq_PER_ML = 14 / 84;
 const SB5_TO_SB14_RATIO = 5 / 1.4;
-const NACL10_MEq_PER_ML = 100 / 58.44;
 const KCL10_MEq_PER_ML = 100 / 74.55;
-const ISOTONIC_SODIUM_MEq_PER_L = 154;
 const MAINTENANCE_POTASSIUM_MEq_PER_L = 20;
+const KCL10_ML_PER_100ML_MAINTENANCE = 1.5;
 
 const dehydrationConfig: Record<DehydrationSeverity, SelectedDehydration> = {
   none: { severity: 'none', label: '无明显脱水', percent: 0 },
   mild: { severity: 'mild', label: '轻度脱水', percent: 3 },
   moderate: { severity: 'moderate', label: '中度脱水', percent: 5 },
   severe: { severity: 'severe', label: '重度脱水', percent: 10 },
+};
+
+type RecipeKey = 'isotonic21' | 'twoThirds432' | 'half231' | 'third12' | 'fifth14' | 'maintenance';
+
+interface HospitalFluidRecipe {
+  key: RecipeKey;
+  name: string;
+  tonicity: string;
+  sodiumChloride10Rate: number;
+  sodiumBicarbonate14Rate: number;
+  sodiumBicarbonate5Rate: number;
+  note: string;
+}
+
+const hospitalFluidRecipes: Record<RecipeKey, HospitalFluidRecipe> = {
+  isotonic21: {
+    key: 'isotonic21',
+    name: '2:1等张含钠液',
+    tonicity: '等张',
+    sodiumChloride10Rate: 0.06,
+    sodiumBicarbonate14Rate: 1 / 3,
+    sodiumBicarbonate5Rate: 0.093,
+    note: '用于休克/循环障碍扩容；相当于2份0.9%NaCl + 1份1.4%SB。',
+  },
+  twoThirds432: {
+    key: 'twoThirds432',
+    name: '4:3:2液',
+    tonicity: '2/3张',
+    sodiumChloride10Rate: 0.04,
+    sodiumBicarbonate14Rate: 2 / 9,
+    sodiumBicarbonate5Rate: 0.062,
+    note: '常用于低渗性脱水的累积损失量补充。',
+  },
+  half231: {
+    key: 'half231',
+    name: '2:3:1液',
+    tonicity: '1/2张',
+    sodiumChloride10Rate: 0.03,
+    sodiumBicarbonate14Rate: 1 / 6,
+    sodiumBicarbonate5Rate: 0.047,
+    note: '常用于等渗性脱水累积损失量、首日维持+继续损失。',
+  },
+  third12: {
+    key: 'third12',
+    name: '1:2液',
+    tonicity: '1/3张',
+    sodiumChloride10Rate: 0.03,
+    sodiumBicarbonate14Rate: 0,
+    sodiumBicarbonate5Rate: 0,
+    note: '传统用于高渗性脱水；Na+ >=150 mmol/L时需按高钠路径慢纠正并上级复核。',
+  },
+  fifth14: {
+    key: 'fifth14',
+    name: '1:4液',
+    tonicity: '1/5张',
+    sodiumChloride10Rate: 0.018,
+    sodiumBicarbonate14Rate: 0,
+    sodiumBicarbonate5Rate: 0,
+    note: '传统用于生理需要量；重症、低钠或ADH风险高时需谨慎。',
+  },
+  maintenance: {
+    key: 'maintenance',
+    name: '生理维持液',
+    tonicity: '约1/5张',
+    sodiumChloride10Rate: 0.02,
+    sodiumBicarbonate14Rate: 0,
+    sodiumBicarbonate5Rate: 0,
+    note: '按院内表格：每100mL 5%GS约加10%NaCl 2mL；见尿后可加10%KCl 1.5mL。',
+  },
 };
 
 function round(value: number, digits = 1) {
@@ -179,28 +252,53 @@ function getPotassiumAdditive(data: BGAData) {
   return MAINTENANCE_POTASSIUM_MEq_PER_L;
 }
 
+function getDehydrationRecipeBySodium(na: number | null): HospitalFluidRecipe {
+  if (na === null) return hospitalFluidRecipes.half231;
+  if (na < 130) return hospitalFluidRecipes.twoThirds432;
+  if (na > 150) return hospitalFluidRecipes.third12;
+  return hospitalFluidRecipes.half231;
+}
+
+function getDehydrationNature(na: number | null) {
+  if (na === null) return 'Na+未提供，暂按等渗性脱水估算';
+  if (na < 130) return '低渗性脱水倾向';
+  if (na > 150) return '高渗性/高钠脱水倾向';
+  return '等渗性脱水倾向';
+}
+
 function buildDailyFluidOrder(
   day: string,
   title: string,
   totalMl: number,
+  durationHours: number,
+  recipe: HospitalFluidRecipe,
   potassiumTargetMmolPerL: number,
+  addPotassium: boolean,
   note: string,
 ): DailyFluidOrder {
-  const sodiumChloride10Ml = totalMl * ISOTONIC_SODIUM_MEq_PER_L / 1000 / NACL10_MEq_PER_ML;
-  const potassiumChloride10Ml = totalMl * potassiumTargetMmolPerL / 1000 / KCL10_MEq_PER_ML;
-  const glucose5Ml = Math.max(0, totalMl - sodiumChloride10Ml - potassiumChloride10Ml);
+  const sodiumChloride10Ml = totalMl * recipe.sodiumChloride10Rate;
+  const sodiumBicarbonate14Ml = totalMl * recipe.sodiumBicarbonate14Rate;
+  const sodiumBicarbonate5Ml = totalMl * recipe.sodiumBicarbonate5Rate;
+  const potassiumChloride10Ml = addPotassium ? totalMl * potassiumTargetMmolPerL / 1000 / KCL10_MEq_PER_ML : 0;
+  const glucose5Ml = Math.max(0, totalMl - sodiumChloride10Ml - sodiumBicarbonate14Ml - potassiumChloride10Ml);
+  const glucose5WithSb5Ml = Math.max(0, totalMl - sodiumChloride10Ml - sodiumBicarbonate5Ml - potassiumChloride10Ml);
 
   return {
     day,
     title,
     totalMl,
-    rateMlPerHour: totalMl / 24,
+    durationHours,
+    rateMlPerHour: totalMl / durationHours,
     glucose5Ml,
+    glucose5WithSb5Ml,
     sodiumChloride10Ml,
+    sodiumBicarbonate14Ml,
+    sodiumBicarbonate5Ml,
     potassiumChloride10Ml,
-    sodiumTargetMmolPerL: ISOTONIC_SODIUM_MEq_PER_L,
+    recipeName: recipe.name,
+    tonicity: recipe.tonicity,
     potassiumTargetMmolPerL,
-    note,
+    note: `${note} ${recipe.note}`,
   };
 }
 
@@ -234,67 +332,105 @@ function buildFluidPlan(
   const twoThirds = hourly * 2 / 3;
   const bolus10 = 10 * weightKg;
   const bolus20 = 20 * weightKg;
-  const selectedDeficitMl = weightKg * selectedDehydration.percent * 10;
-  const firstDayDeficitMl = Math.min(selectedDeficitMl, weightKg * 5 * 10);
-  const secondDayDeficitMl = Math.max(0, selectedDeficitMl - firstDayDeficitMl);
-  const noDehydrationDailyMl = twoThirds * 24;
   const potassiumTarget = getPotassiumAdditive(data);
+  const addPotassium = potassiumTarget > 0;
+  const dehydrationNature = getDehydrationNature(data.Na);
+  const cumulativeRecipe = getDehydrationRecipeBySodium(data.Na);
+  const firstDayPerKg = selectedDehydration.severity === 'severe'
+    ? 180
+    : selectedDehydration.severity === 'moderate'
+      ? 135
+      : selectedDehydration.severity === 'mild'
+        ? 100
+        : 0;
+  const firstDayTotalMl = firstDayPerKg * weightKg;
+  const expansionMl = selectedDehydration.severity === 'severe' ? 20 * weightKg : 0;
+  const cumulativeTargetMl = firstDayTotalMl / 2;
+  const cumulativeMl = Math.max(0, cumulativeTargetMl - expansionMl);
+  const cumulativeHours = selectedDehydration.severity === 'none' ? 0 : 10;
+  const remainingFirstDayMl = Math.max(0, firstDayTotalMl - expansionMl - cumulativeMl);
+  const remainingFirstDayHours = selectedDehydration.severity === 'none' ? 24 : 16;
+  const day2BaseMl = selectedDehydration.severity === 'none' ? twoThirds * 24 : 70 * weightKg;
+  const day3BaseMl = selectedDehydration.severity === 'none' ? twoThirds * 24 : 70 * weightKg;
 
-  const deficitOptions: DeficitOption[] = [3, 5, 10].map((percent) => {
-    const deficitMl = weightKg * percent * 10;
-    const firstDayDeficit = weightKg * Math.min(percent, 5) * 10;
-    const first24Rate = (daily + firstDayDeficit) / 24;
-    const remaining = Math.max(0, deficitMl - firstDayDeficit);
-    const second24Rate = remaining > 0 ? (daily + remaining) / 24 : undefined;
-
+  const deficitOptions: DeficitOption[] = [
+    { label: '轻度脱水', percent: 5, deficitMl: 50 * weightKg, first24Rate: 100 * weightKg / 24, plan: '首日总量约90-120 mL/kg，轻症优先ORS；需IV时按100 mL/kg估算' },
+    { label: '中度脱水', percent: 7.5, deficitMl: 75 * weightKg, first24Rate: 135 * weightKg / 24, plan: '首日总量约120-150 mL/kg，累积损失量约占首日总量1/2' },
+    { label: '重度脱水', percent: 10, deficitMl: 100 * weightKg, first24Rate: 180 * weightKg / 24, plan: '首日总量约150-180 mL/kg；有休克先2:1液20 mL/kg扩容' },
+  ].map((option) => {
     return {
-      label: `${percent}%脱水`,
-      percent,
-      deficitMl,
-      first24Rate,
-      second24Rate,
-      plan: percent <= 5 ? '缺失量24小时内补足' : '首24小时最多先补5%缺失，余量后24小时补',
+      ...option,
+      second24Rate: 70 * weightKg / 24,
     };
   });
 
-  const day1Total = selectedDehydration.percent === 0 ? noDehydrationDailyMl : daily + firstDayDeficitMl;
-  const day2Total = selectedDehydration.percent === 0 ? noDehydrationDailyMl : daily + secondDayDeficitMl;
-  const day3Total = selectedDehydration.percent === 0 ? noDehydrationDailyMl : daily;
-  const dailyOrders: DailyFluidOrder[] = [
-    buildDailyFluidOrder(
-      '第1天',
-      selectedDehydration.percent === 0
-        ? '无明显脱水：2/3维持量起始'
-        : `${selectedDehydration.label}：维持量 + ${format(firstDayDeficitMl, ' mL')}缺失量`,
-      day1Total,
-      potassiumTarget,
-      selectedDehydration.percent === 0
-        ? '病重或禁食但无脱水时，先按2/3维持量；若明确无ADH风险且需全维持，可按全维持量调整。'
-        : selectedDehydration.percent <= 5
-          ? '缺失量计划24小时内补足；继续丢失量按实际mL:mL另补。'
-          : '重度脱水首日最多先补5%缺失；休克扩容另计且不并入此袋。'
-    ),
-    buildDailyFluidOrder(
-      '第2天',
-      selectedDehydration.percent >= 10
-        ? `补余缺失：维持量 + ${format(secondDayDeficitMl, ' mL')}缺失量`
-        : selectedDehydration.percent > 0
-          ? '缺失补足后：维持量 + 继续丢失'
-          : '继续2/3维持或转经口/肠内',
-      day2Total,
-      potassiumTarget,
-      selectedDehydration.percent >= 10
-        ? '需先复评体重、尿量、Na+/K+和循环；若高钠或病情复杂，缺失量应更慢补。'
-        : '若已能经口/鼻饲，优先转肠内；仍需IV时按维持量并补实际丢失。'
-    ),
-    buildDailyFluidOrder(
-      '第3天',
-      selectedDehydration.percent > 0 ? '维持量 + 继续丢失' : '复评后维持或停IV',
-      day3Total,
-      potassiumTarget,
-      '按当日体重、出入量、尿量和电解质复算；腹泻、胃肠减压等继续丢失按实际补回。'
-    ),
-  ];
+  const dailyOrders: DailyFluidOrder[] = selectedDehydration.severity === 'none'
+    ? [
+      buildDailyFluidOrder(
+        '第1天',
+        '无明显脱水：维持/限制液',
+        day2BaseMl,
+        24,
+        hospitalFluidRecipes.maintenance,
+        potassiumTarget,
+        addPotassium,
+        '无脱水但需静脉液时先按2/3维持量；若已能经口/肠内，优先停IV。'
+      ),
+    ]
+    : [
+      ...(expansionMl > 0 ? [
+        buildDailyFluidOrder(
+          '第1天-扩容',
+          '2:1等张液 20 mL/kg，30-60分钟',
+          expansionMl,
+          1,
+          hospitalFluidRecipes.isotonic21,
+          potassiumTarget,
+          false,
+          '仅用于休克/循环障碍；扩容后立即复评CRT、脉搏、血压、尿量。'
+        ),
+      ] : []),
+      buildDailyFluidOrder(
+        '第1天-累积损失',
+        `${dehydrationNature}：${cumulativeRecipe.name}`,
+        cumulativeMl,
+        cumulativeHours,
+        cumulativeRecipe,
+        potassiumTarget,
+        addPotassium,
+        '无休克时从此阶段开始；若已扩容，累积损失量已扣除扩容量。'
+      ),
+      buildDailyFluidOrder(
+        '第1天-维持+继续损失',
+        '2:3:1液，补足首日余量',
+        remainingFirstDayMl,
+        remainingFirstDayHours,
+        hospitalFluidRecipes.half231,
+        potassiumTarget,
+        addPotassium,
+        '继续损失按腹泻、呕吐、胃肠减压等实际丢失另行mL:mL补回。'
+      ),
+      buildDailyFluidOrder(
+        '第2天',
+        '生理需要量 + 继续损失',
+        day2BaseMl,
+        24,
+        hospitalFluidRecipes.maintenance,
+        potassiumTarget,
+        addPotassium,
+        '脱水纠正后优先ORS/经口；仍需IV时按60-80 mL/kg/day取中值70 mL/kg/day，继续损失另加。'
+      ),
+      buildDailyFluidOrder(
+        '第3天',
+        '复评后维持或转口服',
+        day3BaseMl,
+        24,
+        hospitalFluidRecipes.maintenance,
+        potassiumTarget,
+        addPotassium,
+        '按当日体重、尿量、出入量和电解质重算；无继续损失时逐步停IV。'
+      ),
+    ];
 
   const na = data.Na;
   const hasDysnatremia = na !== null && (na < 135 || na > 145);
@@ -304,47 +440,48 @@ function buildFluidPlan(
       ? 'K+偏高：上述液体不加10%KCl，并按高钾路径复查/处理。'
       : '10%KCl按20 mmol/L维持补钾换算；执行前必须确认有尿、肾功能可、无高钾。';
   const orders = [
-    `如休克/低灌注：0.9%氯化钠 ${round(bolus10, 0)}-${round(bolus20, 0)} mL 快速静滴/推注，复评循环；休克复苏量不计入后续维持+缺失计算。`,
-    `当前选择：${selectedDehydration.label}${selectedDehydration.percent > 0 ? `（按${selectedDehydration.percent}%估算）` : ''}；继续丢失量按上一小时或4小时实际丢失量 mL:mL 补回。`,
-    '优先使用预混0.9%NaCl + 5%GS +/- KCl；若需用5%GS配10%NaCl/10%KCl，请由药房或本院规范核对终浓度和泵速。',
+    `当前选择：${selectedDehydration.label}；${dehydrationNature}；首日总量 ${firstDayPerKg > 0 ? `${firstDayPerKg} mL/kg = ${format(firstDayTotalMl, ' mL', 0)}` : '按2/3维持量'}。`,
+    `如休克/低灌注：2:1等张含钠液 ${round(bolus10, 0)}-${round(bolus20, 0)} mL 快速静滴/推注，复评循环；葡萄糖液不能单独用于休克扩容。`,
+    '本院配液统一按最终液量计算：5%GS + 10%NaCl + 1.4%SB；若使用5%SB，界面同步给出等效替代体积。',
     potassiumNote,
   ];
 
   if (hasDysnatremia) {
-    orders.push('Na+异常时不要机械套用普通脱水补液速度；应按低钠/高钠路径限制纠正速度并4-6小时复查电解质。');
+    orders.push('Na+异常时不要机械套用普通脱水补液速度；Na+ <130或>150 mmol/L建议上级复核，并4-6小时复查电解质。');
   }
 
   return {
-    title: '补液：维持量、缺失量和张力',
+    title: '补液：本院混合液拟医嘱',
     tone: hasDysnatremia ? 'warn' : 'neutral',
-    summary: `已按“${selectedDehydration.label}”生成第1-3天拟医嘱；张力按等张含糖液估算，执行前需复核出入量和电解质。`,
+    summary: `按“${selectedDehydration.label} + ${dehydrationNature}”生成可配液医嘱；先看上方处方，公式和推导放在下方复核。`,
     orders,
     formulas: [
-      '总液量 = 维持量 + 脱水缺失量 + 继续丢失量',
-      '4-2-1维持量(mL/h) = 4 x 前10kg + 2 x 第二个10kg + 1 x 其余kg，上限约100mL/h',
-      '缺失量(mL) = 体重(kg) x 脱水百分比 x 10',
-      '首24h缺失量：<=5%脱水24h补足；>5%脱水首24h先补5%，余量次日复评后补',
-      '10%NaCl(mL) = 154(mmol/L) x 总量(mL) / 1000 / 1.71(mmol/mL)',
-      '10%KCl(mL) = 20(mmol/L) x 总量(mL) / 1000 / 1.34(mmol/mL)，仅在有尿且无高钾/肾衰时加入',
+      '首日总量：轻度90-120、中度120-150、重度150-180 mL/kg/day；本工具取100/135/180 mL/kg/day',
+      '首日累积损失量约=首日总量/2；重度/休克先2:1等张液20 mL/kg扩容，并从累积损失量中扣除',
+      '张力选择：低渗Na<130用4:3:2(2/3张)；等渗Na130-150用2:3:1(1/2张)；高渗Na>150需慢纠正/上级复核',
+      '10%NaCl(mL)=最终液量 x 张力 x 6%；5%SB(mL)=最终液量 x 张力 x 9.3%',
+      '1.4%SB替代量：2:1液=总量/3；4:3:2液=总量x2/9；2:3:1液=总量/6',
+      '10%KCl维持加入量=最终液量 x 1.5 mL/100mL，浓度约0.15%，仅见尿且无高钾/肾衰时加入',
     ],
     calculations: [
       { label: '体重', value: format(weightKg, ' kg') },
       { label: '脱水选择', value: `${selectedDehydration.label}${selectedDehydration.percent > 0 ? `（${selectedDehydration.percent}%）` : ''}` },
-      { label: '全维持量', value: `${format(hourly, ' mL/h')} = ${format(daily, ' mL/24h')}` },
+      { label: '脱水性质', value: dehydrationNature, tone: data.Na !== null && (data.Na < 130 || data.Na > 150) ? 'warn' : 'neutral' },
+      { label: '传统首日总量', value: firstDayPerKg > 0 ? `${format(firstDayTotalMl, ' mL/24h', 0)}（${firstDayPerKg} mL/kg）` : '-' },
+      { label: '累积损失阶段', value: selectedDehydration.severity === 'none' ? '-' : `${format(cumulativeMl, ' mL', 0)} / ${cumulativeHours}h` },
+      { label: '首日余量阶段', value: selectedDehydration.severity === 'none' ? '-' : `${format(remainingFirstDayMl, ' mL', 0)} / ${remainingFirstDayHours}h` },
+      { label: '全维持量(4-2-1)', value: `${format(hourly, ' mL/h')} = ${format(daily, ' mL/24h')}` },
       { label: '2/3维持量', value: format(twoThirds, ' mL/h') },
-      { label: '估算缺失量', value: format(selectedDeficitMl, ' mL'), tone: selectedDehydration.percent >= 10 ? 'danger' : selectedDehydration.percent > 0 ? 'warn' : 'neutral' },
-      { label: '第1天总量', value: `${format(day1Total, ' mL/24h')} = ${format(day1Total / 24, ' mL/h')}`, tone: selectedDehydration.percent > 0 ? 'warn' : 'neutral' },
-      { label: '第2天总量', value: `${format(day2Total, ' mL/24h')} = ${format(day2Total / 24, ' mL/h')}` },
-      { label: '10%NaCl换算', value: `${format(100 * ISOTONIC_SODIUM_MEq_PER_L / 1000 / NACL10_MEq_PER_ML, ' mL/100mL')}` },
-      { label: '10%KCl换算', value: potassiumTarget > 0 ? `${format(100 * potassiumTarget / 1000 / KCL10_MEq_PER_ML, ' mL/100mL')}` : '暂不加钾', tone: potassiumTarget > 0 ? 'neutral' : 'warn' },
+      { label: '第2/3天基础量', value: `${format(day2BaseMl, ' mL/24h', 0)}（继续损失另加）` },
+      { label: '10%KCl换算', value: potassiumTarget > 0 ? `${format(KCL10_ML_PER_100ML_MAINTENANCE, ' mL/100mL')}` : '暂不加钾', tone: potassiumTarget > 0 ? 'neutral' : 'warn' },
       { label: '休克单次扩容', value: `${format(bolus10, ' mL', 0)}-${format(bolus20, ' mL', 0)} 等张晶体液`, tone: 'warn' },
     ],
     deficitOptions,
     dailyOrders,
     selectedDehydration,
     notes: [
-      scenario === 'A' ? '新生儿补液请按日龄、出生体重、尿量和NICU路径调整；此处仅作公式提示。' : '此计算适用于1月龄以上儿童的床旁估算，肾衰、心衰、肝衰、烧伤、DKA等需走专病方案。',
-      '严密记录出入量、尿量、体重，电解质异常或大量丢失时4-6小时复查。低张液不作为常规首选。',
+      scenario === 'A' ? '新生儿补液请按日龄、出生体重、尿量和NICU路径调整；此处仅作公式提示。' : '本模块按院内儿童腹泻/脱水补液资料生成，肾衰、心衰、烧伤、DKA、休克不稳定等需走专病方案。',
+      '低张/传统张力液在重症、肺部/CNS疾病、低钠或ADH风险高时需谨慎；严密记录出入量、尿量、体重，4-6小时复查电解质。',
     ],
   };
 }
@@ -444,47 +581,72 @@ function buildPotassiumPlan(weightKg: number | null, data: BGAData): TreatmentSe
   }
 
   if (k < 3.5) {
-    const oralDose = Math.min(20, weightKg);
-    const ivHourly = 0.2 * weightKg;
-    const tone: Tone = k < 2.5 ? 'danger' : 'warn';
+    const oralSingleMl = weightKg;
+    const oralDailyMinMl = 2 * weightKg;
+    const oralDailyMaxMl = 3 * weightKg;
+    const ivDoseByDeficitMl = Math.max(0, (3.5 - k) * weightKg * 0.3 / KCL10_MEq_PER_ML);
+    const ivDoseMinMl = 0.225 * weightKg;
+    const ivDoseMaxMl = Math.min(0.75 * weightKg, 40 / KCL10_MEq_PER_ML);
+    const ivDoseMl = Math.min(Math.max(ivDoseByDeficitMl, ivDoseMinMl), ivDoseMaxMl);
+    const minDilutionMl = Math.ceil(ivDoseMl / 3 * 100);
+    const maxRateMlPerHour = 0.5 * weightKg / KCL10_MEq_PER_ML;
+    const tone: Tone = k < 3 ? 'danger' : 'warn';
+    const urgent = k < 3;
 
     return {
       title: `钾：低钾血症 K ${format(k, ' mmol/L')}`,
       tone,
-      summary: '优先口服/肠内补钾；IV补钾为高风险用药，需尿量和监护。',
-      orders: [
-        `可口服/鼻饲KCl ${format(oralDose, ' mmol')}，必要时按1-2 mmol/kg/次（单次通常不超过20 mmol）调整。`,
-        `不能肠内、K <2.5或有心电改变：考虑IV KCl，速度先按 ${format(ivHourly, ' mmol/h')}（0.2 mmol/kg/h）以内，心电监护，复查K+/Mg2+。`,
-        '有尿后维持液可加KCl 20 mmol/L；纠酸或胰岛素治疗可能使K+进一步下降，应更密切复查。',
-      ],
+      summary: urgent ? 'K+ <3.0 mmol/L按中重度低钾处理，静脉补钾需心电监护。' : '非紧急低钾优先口服/肠内补钾，并在维持液中见尿补钾。',
+      orders: urgent
+        ? [
+          `静脉补钾拟医嘱：10%KCl ${format(ivDoseMl, ' mL')} + 5%GS 至少稀释至 ${format(minDilutionMl, ' mL', 0)}，泵入；速度不超过 ${format(maxRateMlPerHour, ' mL/h')} 10%KCl。`,
+          '要求：确认有尿、无肾衰；持续心电监护；2小时复查K+，同时查Mg2+并纠正低镁。',
+          `若能口服，后续10%KCl总量 ${format(oralDailyMinMl, ' mL')}-${format(oralDailyMaxMl, ' mL/day')} 分次口服/鼻饲。`,
+        ]
+        : [
+          `口服/鼻饲补钾拟医嘱：10%KCl ${format(oralSingleMl, ' mL')} po/鼻饲一次；全天总量 ${format(oralDailyMinMl, ' mL')}-${format(oralDailyMaxMl, ' mL/day')} 分次。`,
+          '见尿后维持液可加10%KCl 1.5 mL/100 mL液体；若腹泻持续或纠酸后K+下降，4-6小时复查。',
+        ],
       formulas: [
-        '口服急补：KCl 1-2 mmol/kg/次，单次通常不超过20 mmol',
-        'IV补钾起始速度：<=0.2 mmol/kg/h；更高速率需PICU/中心静脉/严密监护',
+        '10%KCl 1 mL = 1.34 mmol K+；非紧急口服常按约1 mL/kg/次，全天2-3 mL/kg/day',
+        'IV补钾量(mL) = (期望K - 实测K) x 体重 x 0.3 / 1.34',
+        'IV单次范围：0.3-1 mmol/kg = 0.225-0.75 mL/kg 10%KCl，单次不超过40 mmol',
+        'IV速度 <=0.5 mmol/kg/h；外周浓度 <=0.3%（10%KCl <=3 mL/100 mL液体）',
       ],
       calculations: [
         { label: 'K+', value: format(k, ' mmol/L'), tone },
-        { label: '口服KCl起始量', value: format(oralDose, ' mmol') },
-        { label: 'IV补钾0.2 mmol/kg/h', value: format(ivHourly, ' mmol/h'), tone: 'warn' },
+        { label: '10%KCl口服单次', value: format(oralSingleMl, ' mL') },
+        { label: '10%KCl全天口服', value: `${format(oralDailyMinMl, ' mL')}-${format(oralDailyMaxMl, ' mL')}` },
+        { label: 'IV计算剂量', value: format(ivDoseMl, ' mL'), tone: urgent ? 'danger' : 'warn' },
+        { label: '最低稀释总量', value: format(minDilutionMl, ' mL', 0) },
+        { label: '最大泵速', value: format(maxRateMlPerHour, ' mL/h'), tone: 'warn' },
       ],
-      notes: ['低镁会导致低钾难纠正；建议同步查Mg2+并纠正。'],
+      notes: ['低镁会导致低钾难纠正；补钾前必须确认尿量和肾功能，避免把10%KCl直接静推。'],
     };
   }
 
   if (k > 5.5) {
     const tone: Tone = k > 6.5 ? 'danger' : 'warn';
+    const sb5Ml = 2 * weightKg;
 
     return {
       title: `钾：高钾血症 K ${format(k, ' mmol/L')}`,
       tone,
       summary: '高钾可致命性心律失常，需先排除溶血并立即看心电图。',
       orders: [
-        '立即停用含钾液体和保钾药；复查K+排除溶血，查肾功能、血糖、酸碱和心电图。',
-        'K+ >=6.0或有心电改变：心电监护，上级/PICU会诊；按高钾急救路径给予膜稳定、促钾内移和排钾治疗。',
-        '若合并重度酸中毒，纠酸可能有助于促钾内移，但不能替代高钾急救处理。',
+        '立即停用所有10%KCl和保钾药；补液处方中KCl=0；复查K+排除溶血，查肾功能、血糖、酸碱和心电图。',
+        'K+ >=6.0或有心电改变：心电监护，上级/PICU会诊，按高钾急救流程给予钙剂、胰岛素+葡萄糖、β受体激动剂和排钾治疗。',
+        `若合并酸中毒且需促钾内移：可按本院流程考虑5%NaHCO3 ${format(sb5Ml, ' mL')}（2 mL/kg）静滴，但不能替代高钾急救处理。`,
       ],
-      formulas: ['高钾分层：>5.5 mmol/L；>6.5 mmol/L或心电改变按急症处理。'],
-      calculations: [{ label: 'K+', value: format(k, ' mmol/L'), tone }],
-      notes: ['此工具不自动生成高钾急救全套处方，需按本院高钾流程执行。'],
+      formulas: [
+        '高钾分层：5.5-6轻度，6-7中度，>7 mmol/L重度；心电改变按急症处理',
+        '5%NaHCO3经验量：2 mL/kg，仅在酸中毒/高钾流程中作为促钾内移措施之一',
+      ],
+      calculations: [
+        { label: 'K+', value: format(k, ' mmol/L'), tone },
+        { label: '5%NaHCO3 2 mL/kg', value: format(sb5Ml, ' mL'), tone: 'warn' },
+      ],
+      notes: ['高钾处理必须结合心电图和床旁监护；钙剂、胰岛素等医嘱需按本院抢救流程复核。'],
     };
   }
 
